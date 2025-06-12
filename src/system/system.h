@@ -13,6 +13,13 @@
 #define MAIN_MAG_BIAS_ID 5
 #define MAIN_ACC_6_BIAS_ID 7
 #define MAIN_GYRO_SENS_ID 9
+#define MAIN_GYRO_BIAS2_ID 10
+#define MAIN_GYRO_TEMP_ID 11
+#define MAIN_GYRO_TEMP1_ID 12
+#define MAIN_GYRO_M_ID 13
+#define MAIN_GYRO_C_ID 14
+#define MAIN_GYRO_TEMP_COMP_VALID_ID 15
+
 
 void configure_sense_pins(void);
 

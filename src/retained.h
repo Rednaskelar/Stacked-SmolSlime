@@ -40,6 +40,13 @@ struct retained_data {
 	float accBAinv[4][3];
 	float gyroSensScale[3]; // Gyro sensitivity
 
+	float gyroTemp;
+	float gyroTemp2;
+	float gyroBias2[3];
+	float gyro_m[3];         
+	float gyro_c[3];         
+	bool gyro_temp_comp_valid;
+
 	uint8_t fusion_id; // fusion_data_stored
 	uint8_t fusion_data[512];
 

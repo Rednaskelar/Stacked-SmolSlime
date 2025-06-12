@@ -173,6 +173,12 @@ static void print_info(void)
 	printk("\nAccelerometer bias: %.5f %.5f %.5f\n", (double)retained->accelBias[0], (double)retained->accelBias[1], (double)retained->accelBias[2]);
 #endif
 	printk("Gyroscope bias: %.5f %.5f %.5f\n", (double)retained->gyroBias[0], (double)retained->gyroBias[1], (double)retained->gyroBias[2]);
+#if CONFIG_SENSOR_USE_TCAL
+	printk("Gyroscope temp: %.1f\n", (double)retained->gyroTemp);
+	printk("Gyroscope bias2: %.5f %.5f %.5f\n", (double)retained->gyroBias2[0], (double)retained->gyroBias2[1], (double)retained->gyroBias2[2]);
+	printk("Gyroscope temp2: %.1f\n", (double)retained->gyroTemp2);
+	printk("current temp: %.1f\n", (double)sensor_get_current_imu_temperature());
+#endif
 #if SENSOR_MAG_EXISTS
 //	printk("Magnetometer bridge offset: %.5f %.5f %.5f\n", (double)retained->magBias[0], (double)retained->magBias[1], (double)retained->magBias[2]);
 	printk("Magnetometer matrix:\n");

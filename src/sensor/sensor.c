@@ -114,6 +114,18 @@ static const sensor_imu_t *sensor_imu = &sensor_imu_none;
 static const sensor_mag_t *sensor_mag = &sensor_mag_none;
 static bool use_ext_fifo = false;
 
+
+#define TEMP_READ_INTERVAL 100
+#define TEMP_AVG_WINDOW_SIZE 10
+static float cached_imu_temperature = NAN;
+static int temp_request_counter = 0;
+static bool first_temp_read_done = false;
+static float temp_reading_buffer[TEMP_AVG_WINDOW_SIZE];
+static int temp_buffer_index = 0;
+static int temp_readings_count = 0;
+static bool temp_buffer_initialized = false;
+
+
 //#define DEBUG true
 
 #if DEBUG
@@ -639,6 +651,9 @@ void main_imu_thread(void)
 				case SENSOR_SENSOR_MODE_LOW_POWER:
 					set_update_time_ms(33);
 					LOG_INF("Switching sensors to low power");
+#if CONFIG_SENSOR_USE_TCAL					
+					LOG_INF("Cached temp is equal to: %.2fC", (double)cached_imu_temperature);
+#endif					
 					if (mag_available && mag_enabled)
 						sensor_mag->update_odr(INFINITY, &mag_actual_time); // standby/oneshot
 					break;
@@ -1025,3 +1040,96 @@ void main_imu_restart(void)
 	if (main_ok) // only restart fusion if initialized
 		sensor_fusion->init(gyro_actual_time, accel_actual_time, 6 / 1000.0f); // TODO: using default initial time
 }
+
+#if CONFIG_SENSOR_USE_TCAL
+
+//void initialize_temperature_averaging(void) {
+//    for (int i = 0; i < TEMP_AVG_WINDOW_SIZE; ++i) {
+//        temp_reading_buffer[i] = NAN;
+//    }
+//    temp_buffer_index = 0;
+//    temp_readings_count = 0;
+//    temp_buffer_initialized = true;
+//}
+
+
+float perform_actual_imu_temp_read(void) {
+	 float temp = 25; 
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        temp = sensor_imu->temp_read(); 
+        if (temp != 25 && temp>10 && temp<50) { 
+            return temp; 
+        }
+    }
+    return temp; 
+}
+
+float get_averaged_imu_temperature(void) {
+        if (!temp_buffer_initialized) {
+        for (int i = 0; i < TEMP_AVG_WINDOW_SIZE; ++i) {
+            temp_reading_buffer[i] = NAN;
+        }
+        temp_buffer_index = 0;
+        temp_readings_count = 0;
+        temp_buffer_initialized = true;
+    }
+    float current_raw_temp;
+        current_raw_temp = perform_actual_imu_temp_read();
+
+    if (current_raw_temp != 25) {
+        temp_reading_buffer[temp_buffer_index] = current_raw_temp;
+        temp_buffer_index = (temp_buffer_index + 1) % TEMP_AVG_WINDOW_SIZE;
+        if (temp_readings_count < TEMP_AVG_WINDOW_SIZE) {
+            temp_readings_count++;
+        }
+    }
+    if (temp_readings_count == 0) {
+        return current_raw_temp; 
+    }
+
+    float sum = 0.0f;
+    int valid_samples_in_average = 0;
+    for (int i = 0; i < temp_readings_count; ++i) { 
+    }
+
+    sum = 0.0f;
+    valid_samples_in_average = 0;
+    for (int i = 0; i < TEMP_AVG_WINDOW_SIZE; ++i) {
+        if (!isnan(temp_reading_buffer[i])) {
+            sum += temp_reading_buffer[i];
+            valid_samples_in_average++;
+        }
+    }
+    
+    if (valid_samples_in_average == 0) {
+        return current_raw_temp;
+    }
+    
+    float average_temp = sum / valid_samples_in_average;
+    return average_temp;
+}
+
+float sensor_get_current_imu_temperature(void) {
+	float new_temp;
+    if (!first_temp_read_done || isnan(cached_imu_temperature)) {
+        cached_imu_temperature = get_averaged_imu_temperature();
+        temp_request_counter = 0; 
+        if (!isnan(cached_imu_temperature)) { 
+             first_temp_read_done = true;
+        }
+        return cached_imu_temperature;
+    }
+
+    temp_request_counter++;
+
+    if (temp_request_counter >= TEMP_READ_INTERVAL) {
+        new_temp = get_averaged_imu_temperature();
+		if (new_temp != 25){ 
+		cached_imu_temperature = new_temp;
+		}
+        temp_request_counter = 0;
+    }
+
+    return cached_imu_temperature;
+}
+#endif

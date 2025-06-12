@@ -35,7 +35,7 @@
 static uint8_t imu_id;
 static uint8_t sensor_data[128]; // any use sensor data
 
-static float accelBias[3] = {0}, gyroBias[3] = {0}, magBias[3] = {0}; // offset biases
+static float accelBias[3] = {0}, gyroBias[3] = {0}, magBias[3] = {0}, gyroBias2[3] = {0}; // offset biases
 
 static float accBAinv[4][3];
 static float magBAinv[4][3];
@@ -47,6 +47,7 @@ static int64_t magneto_progress_time;
 static double ata[100]; // init calibration
 static double norm_sum;
 static double sample_count;
+
 
 //#define DEBUG true
 
@@ -71,6 +72,17 @@ static void sensor_calibrate_6_side(void);
 #endif
 static int sensor_calibrate_mag(void);
 
+#if CONFIG_SENSOR_USE_TCAL
+static void sensor_calculate_gyro_temp_coefficients(void);
+
+static inline bool is_invalid_float(float val) {
+    return isnan(val);
+}
+static bool is_slot_bias_plausible(const float bias[3], float temp) {
+    if (is_invalid_float(temp)) return false; 
+    return true;
+}
+#endif
 // helpers
 static bool wait_for_motion(bool motion, int samples);
 static int check_sides(const float *);
@@ -101,14 +113,34 @@ void sensor_calibration_process_accel(float a[3])
 		a[i] -= accelBias[i];
 #endif
 }
+#if CONFIG_SENSOR_USE_TCAL
 
+void sensor_calibration_process_gyro(float g[3])
+{
+	sensor_sample_gyro(g);
+
+	float current_op_temp = sensor_get_current_imu_temperature();
+	if (retained->gyro_temp_comp_valid && !is_invalid_float(current_op_temp)) {
+    for (int i = 0; i < 3; i++) {
+        float estimated_bias = retained->gyro_m[i] * current_op_temp + retained->gyro_c[i];
+        g[i] -= estimated_bias;
+    }
+	
+    } else {
+
+	for (int i = 0; i < 3; i++)
+		g[i] -= gyroBias[i];
+	}
+}
+
+#else
 void sensor_calibration_process_gyro(float g[3])
 {
 	sensor_sample_gyro(g);
 	for (int i = 0; i < 3; i++)
 		g[i] -= gyroBias[i];
 }
-
+#endif
 void sensor_calibration_process_mag(float m[3])
 {
 //	for (int i = 0; i < 3; i++)
@@ -135,6 +167,7 @@ void sensor_calibration_read(void)
 	memcpy(magBias, retained->magBias, sizeof(magBias));
 	memcpy(magBAinv, retained->magBAinv, sizeof(magBAinv));
 	memcpy(accBAinv, retained->accBAinv, sizeof(accBAinv));
+	memcpy(gyroBias2, retained->gyroBias2, sizeof(gyroBias2));
 }
 
 int sensor_calibration_validate(float *a_bias, float *g_bias, bool write)
@@ -195,7 +228,31 @@ int sensor_calibration_validate_mag(float m_inv[][3], bool write)
 	}
 	return 0;
 }
+#if CONFIG_SENSOR_USE_TCAL
 
+void sensor_calibration_clear(float *a_bias, float *g_bias, bool write)
+{
+    float zero_bias[3] = {0}; 
+    float nan_temp = NAN;
+
+    memcpy(accelBias, zero_bias, sizeof(accelBias));
+    memcpy(gyroBias, zero_bias, sizeof(gyroBias));
+    memcpy(gyroBias2, zero_bias, sizeof(gyroBias2));
+
+    if (write)
+    {
+        LOG_INF("Clearing stored calibration data (accel, gyro slots 0 & 1)");
+        sys_write(MAIN_ACCEL_BIAS_ID, &retained->accelBias, zero_bias, sizeof(zero_bias));
+        sys_write(MAIN_GYRO_BIAS_ID, &retained->gyroBias, zero_bias, sizeof(zero_bias));
+        sys_write(MAIN_GYRO_TEMP_ID, &retained->gyroTemp, &nan_temp, sizeof(nan_temp));
+        sys_write(MAIN_GYRO_BIAS2_ID, &retained->gyroBias2, zero_bias, sizeof(zero_bias));
+        sys_write(MAIN_GYRO_TEMP1_ID, &retained->gyroTemp2, &nan_temp, sizeof(nan_temp));
+    }
+
+    sensor_fusion_invalidate();
+}
+
+#else
 void sensor_calibration_clear(float *a_bias, float *g_bias, bool write)
 {
 	if (a_bias == NULL)
@@ -213,6 +270,7 @@ void sensor_calibration_clear(float *a_bias, float *g_bias, bool write)
 
 	sensor_fusion_invalidate();
 }
+#endif
 
 #if CONFIG_SENSOR_USE_6_SIDE_CALIBRATION
 void sensor_calibration_clear_6_side(float a_inv[][3], bool write)
@@ -344,7 +402,112 @@ static int sensor_wait_mag(float m[3], k_timeout_t timeout)
 	memcpy(m, mBuf, sizeof(mBuf));
 	return 0;
 }
+#if CONFIG_SENSOR_USE_TCAL
+static void sensor_calibrate_imu()
+{
+	float last_accelBias[3], temp_calculated_gyro_bias[3] = {0};
+	float last_gyroBias_slot0[3], last_gyroBias_slot1[3];
+    float last_gyroTemp_slot0, last_gyroTemp_slot1, current_temp;
+	bool gyro_slot_updated = false;
 
+	memcpy(last_accelBias, accelBias, sizeof(accelBias));
+	memcpy(last_gyroBias_slot0, retained->gyroBias, sizeof(retained->gyroBias));
+    last_gyroTemp_slot0 = retained->gyroTemp;
+    memcpy(last_gyroBias_slot1, retained->gyroBias2, sizeof(retained->gyroBias2));
+    last_gyroTemp_slot1 = retained->gyroTemp2;
+
+	LOG_INF("Calibrating accelerometer and gyroscope...");
+	LOG_INF("Rest the device on a stable surface");
+	set_led(SYS_LED_PATTERN_LONG, SYS_LED_PRIORITY_SENSOR);
+	if (!wait_for_motion(false, 6)) { 
+		set_led(SYS_LED_PATTERN_OFF, SYS_LED_PRIORITY_SENSOR);
+		return; 
+	}
+	set_led(SYS_LED_PATTERN_ON, SYS_LED_PRIORITY_SENSOR);
+	k_msleep(500); 
+
+	current_temp = sensor_get_current_imu_temperature();
+    LOG_INF("Current IMU temperature for calibration: %.2f C", (double)current_temp);
+
+	if (imu_id == IMU_BMI270) {
+		// BMI270 specific component retrimming
+		main_imu_suspend();
+		int err = bmi_crt(sensor_data);
+		main_imu_resume();
+		if (err) {
+			LOG_WRN("IMU specific calibration failed");
+			set_led(SYS_LED_PATTERN_OFF, SYS_LED_PRIORITY_SENSOR);
+			return;
+		}
+		sys_write(MAIN_SENSOR_DATA_ID, &retained->sensor_data, sensor_data, sizeof(sensor_data));
+		k_msleep(500);
+	}
+
+	LOG_INF("Reading data...");
+	int err = sensor_offsetBias(accelBias, temp_calculated_gyro_bias);
+	if (err) {
+		if (err == -1) LOG_INF("Motion detected");
+		accelBias[0] = NAN; 
+	} else {
+		LOG_INF("New accel bias: %.5f %.5f %.5f", (double)accelBias[0], (double)accelBias[1], (double)accelBias[2]);
+		LOG_INF("New gyro bias: %.5f %.5f %.5f at %.2f C", (double)temp_calculated_gyro_bias[0], (double)temp_calculated_gyro_bias[1], (double)temp_calculated_gyro_bias[2], (double)current_temp);
+	}
+
+	if (is_invalid_float(accelBias[0]) || sensor_calibration_validate(accelBias, temp_calculated_gyro_bias, false)) {
+		set_led(SYS_LED_PATTERN_OFF, SYS_LED_PRIORITY_SENSOR);
+		LOG_WRN("New calibration data failed validation. Restoring previous values.");
+		memcpy(accelBias, last_accelBias, sizeof(accelBias));
+		return;
+	}
+
+	LOG_INF("New calibration data validated successfully.");
+
+	sys_write(MAIN_ACCEL_BIAS_ID, &retained->accelBias, accelBias, sizeof(accelBias));
+
+	bool current_is_cold = (current_temp < CONFIG_SENSOR_TEMP_THRESHOLD);
+	int target_slot = -1;
+
+	bool slot0_valid = !is_invalid_float(retained->gyroTemp);
+	bool slot1_valid = !is_invalid_float(retained->gyroTemp2);
+
+	if (!slot0_valid) {
+		target_slot = 0;
+	} else if (current_is_cold == (retained->gyroTemp < CONFIG_SENSOR_TEMP_THRESHOLD)) {
+		target_slot = 0;
+	} else if (!slot1_valid) {
+		target_slot = 1;
+	} else {
+		target_slot = 1;
+	}
+
+	if (target_slot == 0) {
+		sys_write(MAIN_GYRO_BIAS_ID, &retained->gyroBias, temp_calculated_gyro_bias, sizeof(temp_calculated_gyro_bias));
+		sys_write(MAIN_GYRO_TEMP_ID, &retained->gyroTemp, &current_temp, sizeof(current_temp));
+		gyro_slot_updated = true;
+		LOG_INF("Saved Gyro calibration to Slot 0. Temp: %.2fC", (double)current_temp);
+	} else if (target_slot == 1) {
+		sys_write(MAIN_GYRO_BIAS2_ID, &retained->gyroBias2, temp_calculated_gyro_bias, sizeof(temp_calculated_gyro_bias));
+		sys_write(MAIN_GYRO_TEMP1_ID, &retained->gyroTemp2, &current_temp, sizeof(current_temp));
+		gyro_slot_updated = true;
+		LOG_INF("Saved Gyro calibration to Slot 1. Temp: %.2fC", (double)current_temp);
+	}
+
+	if (gyro_slot_updated) {
+        LOG_INF("Recalculating temp compensation coefficients.");
+        sensor_calculate_gyro_temp_coefficients();
+    }
+
+    memcpy(gyroBias, retained->gyroBias, sizeof(gyroBias));
+    memcpy(gyroBias2, retained->gyroBias2, sizeof(gyroBias2));
+
+	LOG_INF("Finished calibration successfully.");
+	sensor_fusion_invalidate();
+	set_led(SYS_LED_PATTERN_ONESHOT_COMPLETE, SYS_LED_PRIORITY_SENSOR);
+}
+
+
+
+#else
 static void sensor_calibrate_imu()
 {
 	float a_bias[3], g_bias[3];
@@ -421,6 +584,7 @@ static void sensor_calibrate_imu()
 	LOG_INF("Finished calibration");
 	set_led(SYS_LED_PATTERN_ONESHOT_COMPLETE, SYS_LED_PRIORITY_SENSOR);
 }
+#endif
 
 #if CONFIG_SENSOR_USE_6_SIDE_CALIBRATION
 static void sensor_calibrate_6_side(void)
@@ -802,6 +966,48 @@ static int sensor_calibration_request(int id)
 		return 0;
 	}
 }
+#if CONFIG_SENSOR_USE_TCAL
+
+void sensor_calculate_gyro_temp_coefficients() {
+
+    float P1_temp = retained->gyroTemp;
+    float P2_temp = retained->gyroTemp2;
+
+    bool p1_valid = !is_invalid_float(P1_temp) && is_slot_bias_plausible(retained->gyroBias, P1_temp);
+    bool p2_valid = !is_invalid_float(P2_temp) && is_slot_bias_plausible(retained->gyroBias2, P2_temp);
+
+    retained->gyro_temp_comp_valid = false;
+
+    if (p1_valid && p2_valid) {
+        float temp_diff = P2_temp - P1_temp;
+        if (fabsf(temp_diff) >= CONFIG_SENSOR_MIN_TEMP_DIFFERENCE_FOR_SLOPE) {
+            LOG_INF("Calculating gyro temp coefficients. T1=%.2fC, T2=%.2fC", (double)P1_temp, (double)P2_temp);
+            for (int i = 0; i < 3; ++i) {
+                retained->gyro_m[i] = (retained->gyroBias2[i] - retained->gyroBias[i]) / temp_diff;
+                retained->gyro_c[i] = retained->gyroBias[i] - retained->gyro_m[i] * P1_temp;
+                LOG_INF("Axis %d: m=%.5f, c=%.5f", i, (double)retained->gyro_m[i], (double)retained->gyro_c[i]);
+            }
+            retained->gyro_temp_comp_valid = true;
+        } else {
+            LOG_WRN("Temp diff (%.2fC) for gyro cal too small. Temp comp disabled.", (double)temp_diff);
+        }
+    } else {
+        LOG_WRN("One or both gyro cal slots invalid. Temp comp disabled. P1_valid:%d, P2_valid:%d", p1_valid, p2_valid);
+    }
+	if (retained->gyroTemp == 0 || retained->gyroTemp2 == 0 ) {retained->gyro_temp_comp_valid = false;}
+    if (!retained->gyro_temp_comp_valid) {
+        for (int i = 0; i < 3; ++i) {
+            retained->gyro_m[i] = 0.0f;
+            retained->gyro_c[i] = 0.0f;
+        }
+    }
+
+    sys_write(MAIN_GYRO_M_ID, &retained->gyro_m, retained->gyro_m, sizeof(retained->gyro_m));
+    sys_write(MAIN_GYRO_C_ID, &retained->gyro_c, retained->gyro_c, sizeof(retained->gyro_c));
+    sys_write(MAIN_GYRO_TEMP_COMP_VALID_ID, &retained->gyro_temp_comp_valid, &retained->gyro_temp_comp_valid, sizeof(retained->gyro_temp_comp_valid));
+}
+
+#endif
 
 static void calibration_thread(void)
 {

@@ -50,6 +50,9 @@ void main_imu_suspend(void);
 void main_imu_resume(void);
 void main_imu_wakeup(void);
 void main_imu_restart(void);
+#if CONFIG_SENSOR_USE_TCAL
+float sensor_get_current_imu_temperature(void);
+#endif
 
 typedef struct sensor_fusion {
 	void (*init)(float, float, float);  // gyro_time, accel_time, mag_time

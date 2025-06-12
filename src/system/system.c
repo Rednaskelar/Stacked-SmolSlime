@@ -168,6 +168,13 @@ static int sys_retained_init(void)
 		nvs_read(&fs, MAIN_MAG_BIAS_ID, &retained->magBAinv, sizeof(retained->magBAinv));
 		nvs_read(&fs, MAIN_ACC_6_BIAS_ID, &retained->accBAinv, sizeof(retained->accBAinv));
 		nvs_read(&fs, MAIN_GYRO_SENS_ID, &retained->gyroSensScale, sizeof(retained->gyroSensScale));
+		
+		nvs_read(&fs, MAIN_GYRO_TEMP_ID, &retained->gyroTemp, sizeof(retained->gyroTemp));
+		nvs_read(&fs, MAIN_GYRO_TEMP1_ID, &retained->gyroTemp2, sizeof(retained->gyroTemp2));
+		nvs_read(&fs, MAIN_GYRO_BIAS2_ID, &retained->gyroBias2, sizeof(retained->gyroBias2));
+		nvs_read(&fs, MAIN_GYRO_M_ID, &retained->gyro_m, sizeof(retained->gyro_m));
+		nvs_read(&fs, MAIN_GYRO_C_ID, &retained->gyro_c, sizeof(retained->gyro_c));
+		nvs_read(&fs, MAIN_GYRO_TEMP_COMP_VALID_ID, &retained->gyro_temp_comp_valid, sizeof(retained->gyro_temp_comp_valid));
 		retained_update();
 	}
 	else

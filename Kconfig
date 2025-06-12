@@ -289,6 +289,30 @@ config SENSOR_SENS_REV
     help
        Number of rotations used in calculating sensitivity calibration.
 
+
+config SENSOR_USE_TCAL
+    bool "Use temperature calibration"
+    default y
+    help
+        Use temperature calibration for gyroscope.
+        Uses linear function to estimate gyroscopic drift using 2 readings
+
+config SENSOR_TEMP_THRESHOLD
+    int "Temperature treshhold"
+    default 30
+    depends on SENSOR_USE_TCAL
+    help
+       Treshhold that differences calibration at low and high temperature 
+
+config SENSOR_MIN_TEMP_DIFFERENCE_FOR_SLOPE
+    int "Min temp difference"
+    default 3
+    depends on SENSOR_USE_TCAL
+    help
+       Minimal difference between low and high temperature to apply tcal 
+
+
+
 config RADIO_TX_POWER
     int "Radio output power (dBm)"
     default 8
