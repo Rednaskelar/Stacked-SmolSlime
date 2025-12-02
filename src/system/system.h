@@ -18,6 +18,9 @@
 #define BATT_STATS_CURVE_ID 29
 
 #define SETTINGS_ID 30
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION
+#define MAIN_GYRO_SENS_ID 39
+#endif
 
 void configure_sense_pins(void);
 

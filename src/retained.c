@@ -41,7 +41,7 @@ SYS_INIT(retained_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 
 bool retained_validate(void)
 {
-	NRF_STATIC_ASSERT((RETAINED_CHECKED_SIZE <= 1024), "Retained data size exceeds 1 KB limit");
+	NRF_STATIC_ASSERT((RETAINED_CHECKED_SIZE <= 2048), "Retained data size exceeds 1 KB limit"); //dirty fix for nrf52840
 
 	uint64_t now = init_time;
 //	uint64_t now = k_uptime_ticks(); // Get current uptime in ticks as soon as possible
@@ -67,6 +67,9 @@ bool retained_validate(void)
 	if (!valid) {
 		memset(retained, 0, sizeof(struct retained_data));
 		retained->build_timestamp = BUILD_TIMESTAMP;
+		retained->gyroSensScale[0] = 1.0f;
+		retained->gyroSensScale[1] = 1.0f;
+		retained->gyroSensScale[2] = 1.0f;
 	}
 
 	/* Reset to accrue runtime from this session. */

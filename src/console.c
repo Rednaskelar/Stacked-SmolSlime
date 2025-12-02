@@ -25,6 +25,8 @@
 #include <zephyr/sys/base64.h>
 
 #include <ctype.h>
+#include <math.h>
+#include <stdlib.h>
 
 LOG_MODULE_REGISTER(console, LOG_LEVEL_INF);
 
@@ -152,6 +154,25 @@ static void print_sensor(void)
 #endif
 
 	printk("\nFusion: %s\n", sensor_get_sensor_fusion_name());
+
+	#if CONFIG_SENSOR_USE_SENS_CALIBRATION
+    // Display Gyro sensitivity
+    if (retained) {
+        float scale_x = retained->gyroSensScale[0];
+        float scale_y = retained->gyroSensScale[1];
+        float scale_z = retained->gyroSensScale[2];
+        
+        // Calculate the approximate input degrees difference based on the stored scale factor
+        // degrees = (1.0 - (1.0 / scale)) * 360.0 * number of revolutions
+        float deg_x = (1.0f - (1.0f / scale_x)) * (360.0f * CONFIG_SENSOR_SENS_REV);
+        float deg_y = (1.0f - (1.0f / scale_y)) * (360.0f * CONFIG_SENSOR_SENS_REV);
+        float deg_z = (1.0f - (1.0f / scale_z)) * (360.0f * CONFIG_SENSOR_SENS_REV);
+
+        printk("Gyroscope sensitivity (degrees diff over %u rev): %.3f %.3f %.3f\n", (int)CONFIG_SENSOR_SENS_REV, (double)deg_x, (double)deg_y, (double)deg_z);
+    } else {
+        printk("Gyroscope sensitivity: Retained data unavailable.\n");
+    }
+#endif
 }
 
 static void print_connection(void)
@@ -373,6 +394,12 @@ static void console_thread(void)
 	const char command_mag[] = "mag";
 #endif
 
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION   
+    printk("sens <x> <y> <z>             Set gyro sensitivity (deg diff over %u rev)\n", (int)CONFIG_SENSOR_SENS_REV);
+
+	const char command_sens[] = "sens";
+#endif
+
 	printk("set <address>                Manually set receiver\n");
 	printk("pair                         Enter pairing mode\n");
 	printk("clear                        Clear pairing data\n");
@@ -399,6 +426,9 @@ static void console_thread(void)
 #endif
 #if SENSOR_MAG_EXISTS
 	const char command_reset_arg_mag[] = "mag";
+#endif
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION
+    const char command_reset_arg_sens[] = "sens"; // New command argument
 #endif
 	const char command_reset_arg_bat[] = "bat";
 	const char command_reset_arg_all[] = "all";
@@ -452,6 +482,89 @@ static void console_thread(void)
 		{
 			sensor_request_calibration();
 		}
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION      
+        else if (strcmp(argv[0], command_sens) == 0)
+        {
+            if (argc < 2) {
+                printk("Error: Missing arguments. Use 'sens <x> <y> <z>' or 'reset sens'.\n");
+            }
+            else if (strcmp(argv[1], "reset") == 0)
+            {
+                if (retained) {
+                    printk("Resetting gyro sensitivity calibration.\n");
+                    retained->gyroSensScale[0] = 1.0f;
+                    retained->gyroSensScale[1] = 1.0f;
+                    retained->gyroSensScale[2] = 1.0f;
+                    retained_update(); // Save changes
+                    sys_write(MAIN_GYRO_SENS_ID, &retained->gyroSensScale, retained->gyroSensScale, sizeof(retained->gyroSensScale));
+                    printk("Gyro sensitivity reset.\n");
+                } else {
+                    printk("Error: Retained data not available.\n");
+                }
+            }
+            else
+            {
+                float values[3] = {0};
+                bool valid = false;
+
+                // Space separated 
+                // Example: sens 10.5 5.2 1.0
+                if (argc == 4) {
+                    values[0] = strtof(argv[1], NULL);
+                    values[1] = strtof(argv[2], NULL);
+                    values[2] = strtof(argv[3], NULL);
+                    valid = true;
+                }
+                // Comma separated
+                // Example: sens 10.5,5.2,1.0
+                else if (argc == 2) {
+                     char *token;
+                     char *endptr;
+                     int token_count = 0;
+                     // Parse arg 1 as comma separated string
+                     token = strtok(argv[1], ",");
+                     while (token != NULL && token_count < 3) {
+                         values[token_count] = strtof(token, &endptr);
+                         if (token == endptr || *endptr != '\0') {
+                             break; // Invalid float
+                         }
+                         token_count++;
+                         token = strtok(NULL, ",");
+                     }
+                     if (token_count == 3) valid = true;
+                }
+
+                if (valid) { 
+                    if (retained) {
+                        float deg_x = values[0];
+                        float deg_y = values[1];
+                        float deg_z = values[2];
+
+                        float den_x = 1.0f - (deg_x / (360.0f * CONFIG_SENSOR_SENS_REV));
+                        float den_y = 1.0f - (deg_y / (360.0f * CONFIG_SENSOR_SENS_REV));
+                        float den_z = 1.0f - (deg_z / (360.0f * CONFIG_SENSOR_SENS_REV));
+
+                        // Prevent division by zero or near-zero
+                        if (fabsf(den_x) < 1e-6f || fabsf(den_y) < 1e-6f || fabsf(den_z) < 1e-6f) {
+                            printk("Error: Invalid input degrees leading to division by zero. Calibration not applied.\n");
+                        } else {
+                            retained->gyroSensScale[0] = 1.0f / den_x;
+                            retained->gyroSensScale[1] = 1.0f / den_y;
+                            retained->gyroSensScale[2] = 1.0f / den_z;
+                            retained_update();
+                            sys_write(MAIN_GYRO_SENS_ID, &retained->gyroSensScale, retained->gyroSensScale, sizeof(retained->gyroSensScale));
+                            printk("Gyro sensitivity difference set to: %.3f, %.3f, %.3f\n", (double)deg_x, (double)deg_y, (double)deg_z);
+                        }
+                    } else {
+                        printk("Error: Retained data not available.\n");
+                    }
+                } else {
+                    printk("Error: Invalid format. Use: 'sens <x> <y> <z>' or 'sens reset'.\n");
+                }
+            }
+        }
+#endif
+
 #if CONFIG_SENSOR_USE_6_SIDE_CALIBRATION
 		else if (strcmp(argv[0], command_6_side) == 0)
 		{
@@ -525,6 +638,24 @@ static void console_thread(void)
 				sensor_calibration_clear_mag(NULL, true);
 			}
 #endif
+
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION
+            else if (strcmp(argv[1], command_reset_arg_sens) == 0)
+            {
+                if (retained) {
+                    printk("Resetting gyro sensitivity calibration.\n");
+                    retained->gyroSensScale[0] = 1.0f;
+                    retained->gyroSensScale[1] = 1.0f;
+                    retained->gyroSensScale[2] = 1.0f;
+                    retained_update(); // Save changes
+                    sys_write(MAIN_GYRO_SENS_ID, &retained->gyroSensScale, retained->gyroSensScale, sizeof(retained->gyroSensScale));
+                    printk("Gyro sensitivity reset.\n");
+                } else {
+                    printk("Error: Retained data not available.\n");
+                }
+            }
+#endif
+
 			else if (strcmp(argv[1], command_reset_arg_bat) == 0)
 			{
 				sys_reset_battery_tracker();
