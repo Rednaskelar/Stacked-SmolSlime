@@ -166,6 +166,13 @@ static int sys_retained_init(void)
 #if CONFIG_SENSOR_USE_SENS_CALIBRATION
 		sys_read(MAIN_GYRO_SENS_ID, &retained->gyroSensScale, sizeof(retained->gyroSensScale));
 #endif
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+		sys_read(MAIN_GYRO_TEMP_ID, &retained->gyroTemp, sizeof(retained->gyroTemp));
+        sys_read(MAIN_GYRO_TCAL_POINTS_ID, &retained->tempCalPoints, sizeof(retained->tempCalPoints));
+        sys_read(MAIN_GYRO_TCAL_COEFFS_ID, &retained->tempCalCoeffs, sizeof(retained->tempCalCoeffs));
+        sys_read(MAIN_GYRO_TCAL_CORRECTION_ID, &retained->tempCalCorrectionOffset, sizeof(retained->tempCalCorrectionOffset));
+        sys_read(MAIN_GYRO_TCAL_STATE_ID, &retained->tempCalState, sizeof(retained->tempCalState));
+#endif
 
 		retained_update();
 	}

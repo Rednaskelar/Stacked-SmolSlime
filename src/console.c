@@ -146,6 +146,16 @@ static void print_sensor(void)
 	printk("\nAccelerometer bias: %.5f %.5f %.5f\n", (double)retained->accelBias[0], (double)retained->accelBias[1], (double)retained->accelBias[2]);
 #endif
 	printk("Gyroscope bias: %.5f %.5f %.5f\n", (double)retained->gyroBias[0], (double)retained->gyroBias[1], (double)retained->gyroBias[2]);
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+    // Display the real-time calculated gyro offset
+    float current_gyro_offset[3];
+    sensor_calibration_get_last_gyro_offset(current_gyro_offset);
+    printk("Gyroscope bias tcal (real-time): %.5f %.5f %.5f at %.2f C\n", 
+           (double)current_gyro_offset[0], 
+           (double)current_gyro_offset[1], 
+           (double)current_gyro_offset[2],
+           (double)sensor_get_current_imu_temperature());
+#endif
 #if SENSOR_MAG_EXISTS
 //	printk("Magnetometer bridge offset: %.5f %.5f %.5f\n", (double)retained->magBias[0], (double)retained->magBias[1], (double)retained->magBias[2]);
 	printk("Magnetometer matrix:\n");
@@ -400,6 +410,11 @@ static void console_thread(void)
 	const char command_sens[] = "sens";
 #endif
 
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+    // Update the help string to show the new command set
+    printk("tcal <status|dump|remove index>Temperature calibration\n");
+    const char command_tcal[] = "tcal";
+#endif
 	printk("set <address>                Manually set receiver\n");
 	printk("pair                         Enter pairing mode\n");
 	printk("clear                        Clear pairing data\n");
@@ -428,8 +443,12 @@ static void console_thread(void)
 	const char command_reset_arg_mag[] = "mag";
 #endif
 #if CONFIG_SENSOR_USE_SENS_CALIBRATION
-    const char command_reset_arg_sens[] = "sens"; // New command argument
+    const char command_reset_arg_sens[] = "sens";
 #endif
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+	const char command_reset_arg_tcal[] = "tcal";
+#endif
+
 	const char command_reset_arg_bat[] = "bat";
 	const char command_reset_arg_all[] = "all";
 
@@ -565,6 +584,70 @@ static void console_thread(void)
         }
 #endif
 
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+		else if (strcmp(argv[0], command_tcal) == 0)
+        {
+            if (argc < 1) {
+                printk("Error: Missing argument. Use: tcal <status|clear|dump|remove index>\n");
+            } else if (strcmp(argv[1], "status") == 0) {
+                sensor_tcal_status_poly();
+            } else if (strcmp(argv[1], "clear") == 0) {
+                sensor_tcal_clear_poly();
+			} else if (strcmp(argv[1], "dump") == 0) {
+				if (retained->tempCalState.count == 0) {
+					printk("No temperature calibration points have been collected.\n");
+					return;
+				}
+
+				printk("Dumping %u collected temperature calibration points:\n", retained->tempCalState.count);
+				printk("--------------------------------------------------\n");
+				printk("Index | Temp (C) | Bias X   | Bias Y   | Bias Z\n");
+				printk("--------------------------------------------------\n");
+
+				uint16_t points_printed = 0;
+				// Iterate through the entire buffer to find the valid points
+				for (int i = 0; i < TCAL_BUFFER_SIZE; i++) {
+					// A point is valid if its temperature field is not 0.0
+					if (retained->tempCalPoints[i].temp != 0.0f) {
+						printk(" %-4d | %-8.2f | %-8.5f | %-8.5f | %-8.5f\n",
+							i,
+							(double)retained->tempCalPoints[i].temp,
+							(double)retained->tempCalPoints[i].bias[0],
+							(double)retained->tempCalPoints[i].bias[1],
+							(double)retained->tempCalPoints[i].bias[2]);
+						points_printed++;
+					}
+					
+					// Small delay to prevent overwhelming the console output buffer,
+					// especially if there are many points.
+					if (points_printed % 10 == 0 && points_printed > 0) {
+						k_msleep(20);
+					}
+				}
+				printk("--------------------------------------------------\n");
+				printk("End of dump. Total points printed: %u\n", points_printed);		
+			} else if (strcmp(argv[1], "remove") == 0) {
+                // Check if the 3rd argument (the index) exists
+                if (argc < 3) {
+                    printk("Error: Missing index. Use: tcal remove <index>\n");
+                } else {
+                    char* endptr;
+                    // argv[2] is the index number string
+                    long index = strtol(argv[2], &endptr, 10); 
+
+                    // Check if conversion was successful
+                    if (argv[2] == endptr || *endptr != '\0') {
+                        printk("Error: Invalid index '%s'. Please provide a number.\n", argv[2]);
+                    } else {
+                        sensor_tcal_remove_point((int)index);
+                    }
+                }
+            } else {
+                printk("Error: Invalid argument '%s'. Use: <status|clear|dump|remove index>\n", argv[1]);
+            }
+        }
+#endif
+
 #if CONFIG_SENSOR_USE_6_SIDE_CALIBRATION
 		else if (strcmp(argv[0], command_6_side) == 0)
 		{
@@ -656,6 +739,12 @@ static void console_thread(void)
             }
 #endif
 
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+			else if (strcmp(argv[1], command_reset_arg_tcal) == 0)
+			{
+				sensor_tcal_clear_poly();
+			}
+#endif
 			else if (strcmp(argv[1], command_reset_arg_bat) == 0)
 			{
 				sys_reset_battery_tracker();
