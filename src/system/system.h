@@ -20,6 +20,13 @@
 
 #define MAIN_SENSOR_DATA_ID 31
 
+#define MAIN_GYRO_TEMP_ID 32
+#define MAIN_GYRO_TCAL_STATE_ID 33
+#define MAIN_GYRO_TCAL_POINTS_ID 34
+#define MAIN_GYRO_TCAL_COEFFS_ID 35
+#define MAIN_GYRO_TCAL_CORRECTION_ID 36
+#define MAIN_GYRO_SENS_ID 37
+
 void configure_sense_pins(void);
 
 uint8_t reboot_counter_read(void);

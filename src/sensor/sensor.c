@@ -180,6 +180,11 @@ int sensor_get_sensor_temperature(float *ptr)
 	return 0;
 }
 
+float sensor_get_current_imu_temperature(void)
+{
+    return temp;
+}
+
 void sensor_scan_thread(void)
 {
 	int err;

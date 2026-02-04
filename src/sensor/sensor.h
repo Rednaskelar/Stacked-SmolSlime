@@ -30,6 +30,7 @@ const char *sensor_get_sensor_mag_name(void);
 const char *sensor_get_sensor_fusion_name(void);
 
 int sensor_get_sensor_temperature(float *);
+float sensor_get_current_imu_temperature(void);
 
 int sensor_request_scan(bool force);
 

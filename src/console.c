@@ -25,6 +25,8 @@
 #include <zephyr/sys/base64.h>
 
 #include <ctype.h>
+#include <math.h>
+#include <stdlib.h>
 
 LOG_MODULE_REGISTER(console, LOG_LEVEL_INF);
 
@@ -153,6 +155,34 @@ static void print_sensor(void)
 		printk("\nAccelerometer bias: %.5f %.5f %.5f\n", (double)retained->accelBias[0], (double)retained->accelBias[1], (double)retained->accelBias[2]);
 	}
 	printk("Gyroscope bias: %.5f %.5f %.5f\n", (double)retained->gyroBias[0], (double)retained->gyroBias[1], (double)retained->gyroBias[2]);
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+    // Display the real-time calculated gyro offset
+    float current_gyro_offset[3];
+    sensor_calibration_get_last_gyro_offset(current_gyro_offset);
+    printk("Gyroscope bias tcal (real-time): %.5f %.5f %.5f at %.2f C\n", 
+           (double)current_gyro_offset[0], 
+           (double)current_gyro_offset[1], 
+           (double)current_gyro_offset[2],
+           (double)sensor_get_current_imu_temperature());
+#endif
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION
+    // Display Gyro sensitivity
+    if (retained) {
+        float scale_x = retained->gyroSensScale[0];
+        float scale_y = retained->gyroSensScale[1];
+        float scale_z = retained->gyroSensScale[2];
+        
+        // Calculate the approximate input degrees difference based on the stored scale factor
+        // degrees = (1.0 - (1.0 / scale)) * 360.0 * number of revolutions
+        float deg_x = (1.0f - (1.0f / scale_x)) * (360.0f * CONFIG_SENSOR_SENS_REV);
+        float deg_y = (1.0f - (1.0f / scale_y)) * (360.0f * CONFIG_SENSOR_SENS_REV);
+        float deg_z = (1.0f - (1.0f / scale_z)) * (360.0f * CONFIG_SENSOR_SENS_REV);
+
+        printk("Gyroscope sensitivity (degrees diff over %u rev): %.3f %.3f %.3f\n", (int)CONFIG_SENSOR_SENS_REV, (double)deg_x, (double)deg_y, (double)deg_z);
+    } else {
+        printk("Gyroscope sensitivity: Retained data unavailable.\n");
+    }
+#endif
 #if SENSOR_MAG_EXISTS
 //	printk("Magnetometer bridge offset: %.5f %.5f %.5f\n", (double)retained->magBias[0], (double)retained->magBias[1], (double)retained->magBias[2]);
 	printk("Magnetometer matrix:\n");
@@ -495,6 +525,13 @@ static void print_help(void)
 	printk("\nscan                         Restart sensor scan\n");
 	printk("calibrate                    Calibrate sensor ZRO\n");
 	printk("6-side                       Calibrate 6-side accelerometer\n");
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+    // Update the help string to show the new command set
+    printk("tcal <status|dump|remove index>Temperature calibration\n");
+#endif
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION   
+    printk("sens <x> <y> <z>             Set gyro sensitivity (deg diff over %u rev)\n", (int)CONFIG_SENSOR_SENS_REV);
+#endif
 #if SENSOR_MAG_EXISTS
 	printk("mag                          Clear magnetometer calibration\n");
 #endif
@@ -507,10 +544,17 @@ static void print_help(void)
 	printk("\nmeow                         Meow!\n");
 
 #if SENSOR_MAG_EXISTS
-	printk("\nreset_data (zro|acc|mag|bat|all)\n");
+    printk("\nreset_data (zro|acc|mag|bat|all");
 #else
-	printk("\nreset_data (zro|acc|bat|all)\n");
+    printk("\nreset_data (zro|acc|bat|all");
 #endif
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION
+    printk("|sens");
+#endif
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+    printk("|tcal");
+#endif
+    printk(")\n");
 
 	printk("\nlist_config                  Display available settings\n");
 	printk("write_config (base64|<config name>|<config id>) <value>\n");
@@ -555,6 +599,12 @@ static void console_thread(void)
 #if SENSOR_MAG_EXISTS
 	const char command_mag[] = "mag";
 #endif
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+    const char command_tcal[] = "tcal";
+#endif
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION
+	const char command_sens[] = "sens";
+#endif
 	const char command_set[] = "set";
 	const char command_pair[] = "pair";
 	const char command_clear[] = "clear";
@@ -569,6 +619,12 @@ static void console_thread(void)
 	const char command_reset_arg_acc[] = "acc";
 #if SENSOR_MAG_EXISTS
 	const char command_reset_arg_mag[] = "mag";
+#endif
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION
+    const char command_reset_arg_sens[] = "sens";
+#endif
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+	const char command_reset_arg_tcal[] = "tcal";
 #endif
 	const char command_reset_arg_bat[] = "bat";
 	const char command_reset_arg_all[] = "all";
@@ -637,6 +693,151 @@ static void console_thread(void)
 			sensor_calibration_clear_mag(NULL, true);
 		}
 #endif
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+		else if (strcmp(argv[0], command_tcal) == 0)
+        {
+            if (argc < 1) {
+                printk("Error: Missing argument. Use: tcal <status|clear|dump|remove index>\n");
+            } else if (strcmp(argv[1], "status") == 0) {
+                sensor_tcal_status_poly();
+            } else if (strcmp(argv[1], "clear") == 0) {
+                sensor_tcal_clear_poly();
+			} else if (strcmp(argv[1], "dump") == 0) {
+				if (retained->tempCalState.count == 0) {
+					printk("No temperature calibration points have been collected.\n");
+					return;
+				}
+
+				printk("Dumping %u collected temperature calibration points:\n", retained->tempCalState.count);
+				printk("--------------------------------------------------\n");
+				printk("Index | Temp (C) | Bias X   | Bias Y   | Bias Z\n");
+				printk("--------------------------------------------------\n");
+
+				uint16_t points_printed = 0;
+				// Iterate through the entire buffer to find the valid points
+				for (int i = 0; i < TCAL_BUFFER_SIZE; i++) {
+					// A point is valid if its temperature field is not 0.0
+					if (retained->tempCalPoints[i].temp != 0.0f) {
+						printk(" %-4d | %-8.2f | %-8.5f | %-8.5f | %-8.5f\n",
+							i,
+							(double)retained->tempCalPoints[i].temp,
+							(double)retained->tempCalPoints[i].bias[0],
+							(double)retained->tempCalPoints[i].bias[1],
+							(double)retained->tempCalPoints[i].bias[2]);
+						points_printed++;
+					}
+					
+					// Small delay to prevent overwhelming the console output buffer,
+					// especially if there are many points.
+					if (points_printed % 10 == 0 && points_printed > 0) {
+						k_msleep(20);
+					}
+				}
+				printk("--------------------------------------------------\n");
+				printk("End of dump. Total points printed: %u\n", points_printed);		
+			} else if (strcmp(argv[1], "remove") == 0) {
+                // Check if the 3rd argument (the index) exists
+                if (argc < 3) {
+                    printk("Error: Missing index. Use: tcal remove <index>\n");
+                } else {
+                    char* endptr;
+                    // argv[2] is the index number string
+                    long index = strtol(argv[2], &endptr, 10); 
+
+                    // Check if conversion was successful
+                    if (argv[2] == endptr || *endptr != '\0') {
+                        printk("Error: Invalid index '%s'. Please provide a number.\n", argv[2]);
+                    } else {
+                        sensor_tcal_remove_point((int)index);
+                    }
+                }
+            } else {
+                printk("Error: Invalid argument '%s'. Use: <status|clear|dump|remove index>\n", argv[1]);
+            }
+        }
+#endif
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION      
+        else if (strcmp(argv[0], command_sens) == 0)
+        {
+            if (argc < 2) {
+                printk("Error: Missing arguments. Use 'sens <x> <y> <z>' or 'reset sens'.\n");
+            }
+            else if (strcmp(argv[1], "reset") == 0)
+            {
+                if (retained) {
+                    printk("Resetting gyro sensitivity calibration.\n");
+                    retained->gyroSensScale[0] = 1.0f;
+                    retained->gyroSensScale[1] = 1.0f;
+                    retained->gyroSensScale[2] = 1.0f;
+                    retained_update(); // Save changes
+                    sys_write(MAIN_GYRO_SENS_ID, &retained->gyroSensScale, retained->gyroSensScale, sizeof(retained->gyroSensScale));
+                    printk("Gyro sensitivity reset.\n");
+                } else {
+                    printk("Error: Retained data not available.\n");
+                }
+            }
+            else
+            {
+                float values[3] = {0};
+                bool valid = false;
+
+                // Space separated 
+                // Example: sens 10.5 5.2 1.0
+                if (argc == 4) {
+                    values[0] = strtof(argv[1], NULL);
+                    values[1] = strtof(argv[2], NULL);
+                    values[2] = strtof(argv[3], NULL);
+                    valid = true;
+                }
+                // Comma separated
+                // Example: sens 10.5,5.2,1.0
+                else if (argc == 2) {
+                     char *token;
+                     char *endptr;
+                     int token_count = 0;
+                     // Parse arg 1 as comma separated string
+                     token = strtok(argv[1], ",");
+                     while (token != NULL && token_count < 3) {
+                         values[token_count] = strtof(token, &endptr);
+                         if (token == endptr || *endptr != '\0') {
+                             break; // Invalid float
+                         }
+                         token_count++;
+                         token = strtok(NULL, ",");
+                     }
+                     if (token_count == 3) valid = true;
+                }
+
+                if (valid) { 
+                    if (retained) {
+                        float deg_x = values[0];
+                        float deg_y = values[1];
+                        float deg_z = values[2];
+
+                        float den_x = 1.0f - (deg_x / (360.0f * CONFIG_SENSOR_SENS_REV));
+                        float den_y = 1.0f - (deg_y / (360.0f * CONFIG_SENSOR_SENS_REV));
+                        float den_z = 1.0f - (deg_z / (360.0f * CONFIG_SENSOR_SENS_REV));
+
+                        // Prevent division by zero or near-zero
+                        if (fabsf(den_x) < 1e-6f || fabsf(den_y) < 1e-6f || fabsf(den_z) < 1e-6f) {
+                            printk("Error: Invalid input degrees leading to division by zero. Calibration not applied.\n");
+                        } else {
+                            retained->gyroSensScale[0] = 1.0f / den_x;
+                            retained->gyroSensScale[1] = 1.0f / den_y;
+                            retained->gyroSensScale[2] = 1.0f / den_z;
+                            retained_update();
+                            sys_write(MAIN_GYRO_SENS_ID, &retained->gyroSensScale, retained->gyroSensScale, sizeof(retained->gyroSensScale));
+                            printk("Gyro sensitivity difference set to: %.3f, %.3f, %.3f\n", (double)deg_x, (double)deg_y, (double)deg_z);
+                        }
+                    } else {
+                        printk("Error: Retained data not available.\n");
+                    }
+                } else {
+                    printk("Error: Invalid format. Use: 'sens <x> <y> <z>' or 'sens reset'.\n");
+                }
+            }
+        }
+#endif
 		else if (strcmp(argv[0], command_set) == 0)
 		{
 			if (argc != 2)
@@ -688,10 +889,69 @@ static void console_thread(void)
 			else if (strcmp(argv[1], command_reset_arg_mag) == 0)
 				sensor_calibration_clear_mag(NULL, true);
 #endif
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION
+            else if (strcmp(argv[1], command_reset_arg_sens) == 0)
+            {
+                if (retained) {
+                    printk("Resetting gyro sensitivity calibration.\n");
+                    retained->gyroSensScale[0] = 1.0f;
+                    retained->gyroSensScale[1] = 1.0f;
+                    retained->gyroSensScale[2] = 1.0f;
+                    retained_update(); // Save changes
+                    sys_write(MAIN_GYRO_SENS_ID, &retained->gyroSensScale, retained->gyroSensScale, sizeof(retained->gyroSensScale));
+                    printk("Gyro sensitivity reset.\n");
+                } else {
+                    printk("Error: Retained data not available.\n");
+                }
+            }
+#endif
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+			else if (strcmp(argv[1], command_reset_arg_tcal) == 0)
+			{
+				sensor_tcal_clear_poly();
+			}
+#endif
 			else if (strcmp(argv[1], command_reset_arg_bat) == 0)
 				sys_reset_battery_tracker();
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+			else if (strcmp(argv[1], command_reset_arg_tcal) == 0)
+			{
+				sensor_tcal_clear_poly();
+			}
+#endif
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION
+			else if (strcmp(argv[1], command_reset_arg_sens) == 0)
+			{
+				if (retained) {
+					printk("Resetting gyro sensitivity calibration.\n");
+					retained->gyroSensScale[0] = 1.0f;
+					retained->gyroSensScale[1] = 1.0f;
+					retained->gyroSensScale[2] = 1.0f;
+					retained_update(); // Save changes
+					sys_write(MAIN_GYRO_SENS_ID, &retained->gyroSensScale, retained->gyroSensScale, sizeof(retained->gyroSensScale));
+					printk("Gyro sensitivity reset.\n");
+				} else {
+					printk("Error: Retained data not available.\n");
+				}
+			}
+#endif
 			else if (strcmp(argv[1], command_reset_arg_all) == 0)
+			{
 				sys_clear();
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL            
+				sensor_tcal_clear_poly(); 
+#endif 
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION
+                // Explicitly reset sensitivity in RAM to default 1.0f to ensure immediate effect
+                // even if system.c sys_clear logic missed it or wasn't compiled with the config.
+                if (retained) {
+                    retained->gyroSensScale[0] = 1.0f;
+                    retained->gyroSensScale[1] = 1.0f;
+                    retained->gyroSensScale[2] = 1.0f;
+                    retained_update(); 
+                }
+#endif
+			}
 			else
 				printk("Invalid argument\n");
 		}

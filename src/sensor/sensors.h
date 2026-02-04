@@ -43,6 +43,7 @@
 #include "mag/LIS3MDL.h"
 #include "mag/MMC5983MA.h"
 #include "mag/QMC6309.h"
+#include "mag/MMC5603.h"
 
 #include "scan.h"
 #include "scan_spi.h"
@@ -152,7 +153,7 @@ const sensor_mag_t *sensor_mags[] = {
 	&sensor_mag_lis3mdl,
 	&sensor_mag_none, // MMC34160
 	&sensor_mag_none, // MMC3630
-	&sensor_mag_none, // MMC5603/MMC5633
+	&sensor_mag_mmc5603, // MMC5603/MMC5633
 	&sensor_mag_none, // MMC5616
 	&sensor_mag_mmc5983ma
 };

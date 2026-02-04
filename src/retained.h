@@ -8,8 +8,15 @@
 #define RETAINED_H_
 
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
+
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+// A single point in temperature calibration data
+struct TempCalPoint {
+    float temp; // The temperature for this point
+    float bias[3]; // The gyro bias (x, y, z)
+};
+#endif
 
 struct retained_data {
 	/* The build version of the firmware that last updated the
@@ -58,6 +65,22 @@ struct retained_data {
 	float magBias[3];
 	float magBAinv[4][3];
 	float accBAinv[4][3];
+#if CONFIG_SENSOR_USE_SENS_CALIBRATION
+	float gyroSensScale[3]; // Gyro sensitivity
+#endif
+#if CONFIG_SENSOR_USE_TCAL_MANUAL_POLYNOMIAL
+	float gyroTemp;         
+
+    #define TCAL_BUFFER_SIZE (int)((CONFIG_SENSOR_POLY_TEMP_MAX - CONFIG_SENSOR_POLY_TEMP_MIN) * CONFIG_SENSOR_POLY_STEPS_PER_DEGREE)
+    struct TempCalPoint tempCalPoints[TCAL_BUFFER_SIZE];
+    float tempCalCoeffs[3][CONFIG_SENSOR_POLY_DEGREE + 1];
+	float tempCalCorrectionOffset[3];
+    struct {
+        uint16_t count;
+        bool valid;
+        uint8_t degree;
+    } tempCalState;
+#endif
 
 	uint8_t fusion_id; // fusion_data_stored
 	uint8_t fusion_data[512];
