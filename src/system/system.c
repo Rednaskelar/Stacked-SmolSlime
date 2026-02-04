@@ -64,6 +64,20 @@ static const struct pwm_dt_spec clk_out = PWM_DT_SPEC_GET(CLKOUT_NODE);
 static const struct pwm_dt_spec clk_out = {0};
 #endif
 
+#if DT_NODE_HAS_PROP(ZEPHYR_USER_NODE, vcc_gpios)
+#define VCC_EXISTS true
+static const struct gpio_dt_spec vcc_pin = GPIO_DT_SPEC_GET(ZEPHYR_USER_NODE, vcc_gpios);
+#endif
+#if DT_NODE_HAS_PROP(ZEPHYR_USER_NODE, pwr_gpios)
+#define PWR_EXISTS true
+static const struct gpio_dt_spec pwr_pin = GPIO_DT_SPEC_GET(ZEPHYR_USER_NODE, pwr_gpios);
+#endif
+
+#if DT_NODE_HAS_PROP(ZEPHYR_USER_NODE, gnd_gpios)
+#define GND_EXISTS true
+static const struct gpio_dt_spec gnd_pin = GPIO_DT_SPEC_GET(ZEPHYR_USER_NODE, gnd_gpios);
+#endif
+
 #define DFU_EXISTS CONFIG_BUILD_OUTPUT_UF2 || CONFIG_BOARD_HAS_NRF5_BOOTLOADER
 #define ADAFRUIT_BOOTLOADER CONFIG_BUILD_OUTPUT_UF2
 #define NRF5_BOOTLOADER CONFIG_BOARD_HAS_NRF5_BOOTLOADER
@@ -391,6 +405,21 @@ static int sys_gpio_init(void)
 #endif
 #if LDO_EN_EXISTS
 	gpio_pin_configure_dt(&ldo_en, GPIO_OUTPUT);
+#endif
+#if VCC_EXISTS
+    if (device_is_ready(vcc_pin.port)) {
+        gpio_pin_configure_dt(&vcc_pin, GPIO_OUTPUT_ACTIVE);
+    }
+#endif
+#if PWR_EXISTS
+    if (device_is_ready(pwr_pin.port)) {
+        gpio_pin_configure_dt(&pwr_pin, GPIO_OUTPUT_ACTIVE);
+    }
+#endif
+#if GND_EXISTS
+    if (device_is_ready(gnd_pin.port)) {
+        gpio_pin_configure_dt(&gnd_pin, GPIO_OUTPUT_ACTIVE);
+    }
 #endif
 	return 0;
 }
