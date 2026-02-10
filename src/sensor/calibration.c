@@ -106,7 +106,7 @@ static void sensor_sample_mag_magneto_sample(const float a[3], const float m[3])
 static int sensor_calibration_request(int id);
 
 static void calibration_thread(void);
-K_THREAD_DEFINE(calibration_thread_id, 1024, calibration_thread, NULL, NULL, NULL, CALIBRATION_THREAD_PRIORITY, K_FP_REGS, 0);
+K_THREAD_DEFINE(calibration_thread_id, 2048, calibration_thread, NULL, NULL, NULL, CALIBRATION_THREAD_PRIORITY, K_FP_REGS, 0);
 
 static bool use_6_side = false;
 
