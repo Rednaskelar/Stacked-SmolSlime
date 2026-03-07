@@ -819,13 +819,17 @@ void sensor_loop(void)
 			// Read gyroscope (FIFO)
 			uint16_t data_size = CONFIG_1_SETTINGS_READ(CONFIG_1_SENSOR_USE_LOW_POWER_2) ? 1900 : 1024; // Limit FIFO read to 2048 bytes (worst case is ICM 20 byte packet at 1000Hz and 100ms update time)
 			uint8_t* raw_data = (uint8_t*)k_malloc(data_size);
+			uint16_t packets = 0;
 			if (raw_data == NULL)
 			{
 				LOG_ERR("Failed to allocate memory for FIFO buffer");
 				set_status(SYS_STATUS_SENSOR_ERROR, true);
 				main_ok = false;
 			}
-			uint16_t packets = sensor_imu->fifo_read(raw_data, data_size); // TODO: name this better?
+			else
+			{
+				packets = sensor_imu->fifo_read(raw_data, data_size); // TODO: name this better?
+			}
 
 			// Debug info
 #if DEBUG
@@ -941,7 +945,10 @@ void sensor_loop(void)
 			int processed_timesteps = MAX(g_count, a_count);
 
 			// Free the FIFO buffer
-			k_free(raw_data);
+			if (raw_data != NULL)
+			{
+				k_free(raw_data);
+			}
 
 #if DEBUG
 			if (valid_acquisition)
@@ -1140,21 +1147,26 @@ void sensor_loop(void)
 	}
 }
 
-void wait_for_threads(void) // TODO: add timeout
+void wait_for_threads(void)
 {
-	while (main_running)
-		k_usleep(1); // bane of my existence. don't use k_yield()!!!!!!
+	int64_t start_time = k_uptime_get();
+	while (main_running && (k_uptime_get() - start_time < 1000))
+		k_msleep(1); // bane of my existence. don't use k_yield()!!!!!!
 }
 
-void main_imu_suspend(void) // TODO: add timeout
+void main_imu_suspend(void)
 {
 	main_suspended = true;
 	if (!main_running) // don't suspend if already stopped (TODO: may be called from sensor thread)
 		return;
-	while (sensor_sensor_scanning)
-		k_usleep(1); // try not to interrupt scanning
-	while (main_running) // TODO: change to detect if i2c is busy
-		k_usleep(1); // try not to interrupt anything actually
+	int64_t start_time = k_uptime_get();
+	while (sensor_sensor_scanning && (k_uptime_get() - start_time < 1000))
+		k_msleep(1); // try not to interrupt scanning
+	start_time = k_uptime_get();
+	while (main_running && (k_uptime_get() - start_time < 1000)) // TODO: change to detect if i2c is busy
+		k_msleep(1); // try not to interrupt anything actually
+	if (main_running || sensor_sensor_scanning)
+		LOG_WRN("Timeout waiting for sensor thread to suspend");
 	k_thread_suspend(&sensor_thread_id);
 	LOG_INF("Suspended sensor thread");
 }
