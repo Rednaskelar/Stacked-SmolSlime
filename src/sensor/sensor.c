@@ -28,6 +28,7 @@
 
 #include <math.h>
 #include <hal/nrf_gpio.h>
+#include <zephyr/drivers/i2c.h>
 
 #include "fusion/fusions.h"
 #include "sensors.h"
@@ -40,6 +41,9 @@
 #define SENSOR_IMU_SPI_EXISTS true
 #define SENSOR_IMU_SPI_NODE DT_NODELABEL(imu_spi)
 static struct spi_dt_spec sensor_imu_spi_dev = SPI_DT_SPEC_GET(SENSOR_IMU_SPI_NODE, SPI_OP, 0);
+#if DT_PROP_HAS_IDX(SENSOR_IMU_SPI_NODE, cs_gpios, 0) || DT_SPI_DEV_HAS_CS_GPIOS(SENSOR_IMU_SPI_NODE)
+#define SENSOR_IMU_SPI_CS_EXISTS true
+#endif
 #endif
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(imu), okay)
 #define SENSOR_IMU_EXISTS true
@@ -396,7 +400,42 @@ int sensor_request_scan(bool force)
 		sensor_mag_dev.addr = 0x00;
 		sensor_imu_dev_reg = 0xFF;
 		sensor_mag_dev_reg = 0xFF;
+		sensor_scan_clear();
 		LOG_INF("Requested sensor scan");
+#if SENSOR_IMU_EXISTS
+		if (sensor_imu_dev.bus)
+		{
+			LOG_INF("Attempting I2C bus recovery");
+			i2c_recover_bus(sensor_imu_dev.bus);
+		}
+#endif
+#if SENSOR_IMU_SPI_CS_EXISTS
+		if (sensor_imu_spi_dev.config.cs.gpio.port)
+		{
+			LOG_INF("Attempting SPI bus recovery");
+			// Configure CS pin as output (inactive = high for active-low CS)
+			gpio_pin_configure_dt(&sensor_imu_spi_dev.config.cs.gpio, GPIO_OUTPUT_INACTIVE);
+			// Toggle CS to reset SPI framing on the slave
+			for (int i = 0; i < 10; i++)
+			{
+				gpio_pin_set_dt(&sensor_imu_spi_dev.config.cs.gpio, 1); // CS active (low)
+				k_usleep(10);
+				gpio_pin_set_dt(&sensor_imu_spi_dev.config.cs.gpio, 0); // CS inactive (high)
+				k_usleep(10);
+			}
+			k_usleep(100); // Let the chip settle after CS toggling
+			// Attempt shutdown/reset if SPI interface was previously registered
+			if (sensor_imu_id >= 0)
+			{
+				// Use the sensor's own shutdown to reset internal state (FIFO, ODR, etc.)
+				// Each IMU implements the correct reset for its chip
+				sys_interface_resume(); // ensure SPI peripheral is powered
+				sensor_imu->shutdown();
+				k_msleep(10); // Wait for sensor to reboot after reset
+				sys_interface_suspend();
+			}
+		}
+#endif
 	}
 	k_thread_create(&sensor_thread_id, sensor_thread_id_stack, K_THREAD_STACK_SIZEOF(sensor_thread_id_stack), (k_thread_entry_t)sensor_scan_thread, NULL, NULL, NULL, SENSOR_SCAN_THREAD_PRIORITY, 0, K_NO_WAIT);
 	k_thread_join(&sensor_thread_id, K_FOREVER); // wait for the thread to finish
