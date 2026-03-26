@@ -8,6 +8,23 @@
 
 // 30G Range, 16-bit effective reading in this driver
 // 1 bit = 1 mG (based on 0.0625mG for 20-bit, 16-bit >> 4)
+
+extern int lsm_ext_write(const uint8_t addr, const uint8_t *buf, uint32_t num_bytes);
+extern int lsm_ext_write_read(const uint8_t addr, const void *write_buf, size_t num_write, void *read_buf, size_t num_read);
+
+static int mmc_write_reg(uint8_t reg, uint8_t val) {
+    uint8_t buf[2] = {reg, val};
+    return lsm_ext_write(0x30, buf, 2);
+}
+
+//static int mmc_read_reg(uint8_t reg, uint8_t *val) {
+//    return lsm_ext_write_read(0x30, &reg, 1, val, 1);
+//}
+
+static int mmc_burst_read(uint8_t reg, uint8_t *buf, size_t len) {
+    return lsm_ext_write_read(0x30, &reg, 1, buf, len);
+}
+
 static const float sensitivity = 0.001f; // 1 mG/LSB = 0.001 G/LSB
 static const float offset = 32768.0f;    // Unsigned to Signed offset (2^16 / 2)
 
@@ -17,40 +34,47 @@ LOG_MODULE_REGISTER(MMC5603, LOG_LEVEL_DBG);
 
 int mmc5603_init(float time, float *actual_time)
 {
-    // Reset
-    int err = ssi_reg_write_byte(SENSOR_INTERFACE_DEV_MAG, MMC5603_CTRL1_REG, 0x80); // SW Reset similar to others?
-    if (err) LOG_ERR("Communication error in init");
-    k_sleep(K_MSEC(10)); // Wait for reset
+    int err = 0;
+
+    // 1. Software Reset
+    // Ignore the return error on reset, as the chip reboots instantly and may NACK
+    mmc_write_reg(MMC5603_CTRL1_REG, 0x80);
     
-    // Set CMM/ODR if supported, or just Set/Reset
-    // MMC5603 is often used in simple TakeMeasurement mode.
-    // Init automatic Set/Reset if available?
+    // Wait for OTP memory to reload and chip to boot
+    k_sleep(K_MSEC(20)); 
     
-    // For now, we will assume generic usage: Oneshot driven by main loop.
-    *actual_time = time;
-    return 0;
+    // Manual SET Pulse
+    err = mmc_write_reg(MMC5603_CTRL0_REG, 0x08);
+    if (err) LOG_ERR("Communication error in init (Manual SET)");
+    
+    // Wait 1ms for the hardware pulse to physically settle
+    k_sleep(K_MSEC(1));
+
+    // Enable Auto Set/Reset for continuous operation
+    err = mmc_write_reg(MMC5603_CTRL0_REG, 0x20);
+    if (err) LOG_ERR("Communication error in init (Auto SR)");
+
+    *actual_time = INFINITY; // oneshot-only mode through I2C master
+    return err;
 }
 
 void mmc5603_shutdown(void)
 {
-    // Reset or power down
-    ssi_reg_write_byte(SENSOR_INTERFACE_DEV_MAG, MMC5603_CTRL1_REG, 0x80);
+    mmc_write_reg(MMC5603_CTRL1_REG, 0x80);
 }
 
 int mmc5603_update_odr(float time, float *actual_time)
 {
-    // MMC5603 typically runs in oneshot for this driver structure
-    *actual_time = time;
+    // MMC5603 is behind the LSM6DSV I2C master which turns off between
+    // transactions, so continuous measurement mode is not possible.
+    // Always return INFINITY to signal oneshot-only mode.
+    *actual_time = INFINITY;
     return 0;
 }
 
 void mmc5603_mag_oneshot(void)
 {
-    // TM_M (Take Magnetic Measurement) is usually bit 0 of Internal Control 0 (0x1B).
-    // And usually we want to do Set/Reset.
-    // MMC5603 might have Auto Set/Reset or manual.
-    // Let's try sending TM_M (0x01) to CTRL0 (0x1B).
-    int err = ssi_reg_write_byte(SENSOR_INTERFACE_DEV_MAG, MMC5603_CTRL0_REG, 0x01);
+    int err = mmc_write_reg(MMC5603_CTRL0_REG, 0x21);
     oneshot_trigger_time = k_uptime_get();
     if (err) LOG_ERR("Communication error in oneshot");
 }
@@ -58,66 +82,41 @@ void mmc5603_mag_oneshot(void)
 void mmc5603_mag_read(float m[3])
 {
     int err = 0;
-    uint8_t status = 0;
-    int64_t timeout = oneshot_trigger_time + 10; // 10ms timeout (should be fast)
-    
-    if (k_uptime_get() >= timeout) oneshot_trigger_time = 0;
-    
-    // Check Status Register (0x18), Bit 0 (Meas M Done) - Active High
-    while (k_uptime_get() < timeout)
-    {
-        err = ssi_reg_read_byte(SENSOR_INTERFACE_DEV_MAG, MMC5603_STATUS_REG, &status);
-        if (err) break;
-        if (status & 0x40) break; // Wait. Actually MMC5603 datasheet says Bit 6 (0x40) is meas_done? 
-                                  // Or Bit 0? 
-                                  // Common MEMSIC: Bit 0 is Meas Done.
-                                  // MMC5983MA: Bit 0.
-                                  // MMC5603 datasheet check... 
-                                  // Many sources say Status 0x18 Bit 6 (0x40) or Bit 0. 
-                                  // I'll try Bit 6 as per some online MMC56x3 drivers, or Bit 0.
-                                  // Let's assume Bit 0 first as it's standard unless I find otherwise.
-                                  // Actually, I'll check both or just wait sufficient time.
-                                  // MMC34160 uses 0x01.
-                                  // I'll use 0x01 for now.
-        if (status & 0x01) break; 
-    }
-    
-    if (!(status & 0x01)) 
-    {
-        // LOG_ERR("Read timeout or not done");
-        // Proceed anyway or return?
-    }
-    
-    oneshot_trigger_time = 0;
-    
     uint8_t rawData[6];
-    err |= ssi_burst_read(SENSOR_INTERFACE_DEV_MAG, MMC5603_XOUT_0, rawData, 6);
-    if (err) LOG_ERR("Communication error read");
+
+    // Read the 6 data registers only (XOUT_0 through ZOUT_1)
+    err = mmc_burst_read(MMC5603_XOUT_0, rawData, 6);
     
-    mmc5603_mag_process(rawData, m);
+    if (err) {
+        LOG_ERR("Communication error read (err=%d)", err);
+    } else {
+        mmc5603_mag_process(rawData, m);
+    }
 }
 
-void mmc5603_mag_process(uint8_t *raw_m, float m[3])
+void mmc5603_mag_process(uint8_t *rawData, float m[3])
 {
-    // Data format: X0, X1, Y0, Y1, Z0, Z1
-    // X0 is MSB, X1 is LSB (of the 16 bits we read)
-    // 20-bit mode: X0(19:12), X1(11:4).
-    // We treat this as 16-bit value.
-    
-    uint16_t x = ((uint16_t)raw_m[0] << 8) | raw_m[1];
-    uint16_t y = ((uint16_t)raw_m[2] << 8) | raw_m[3];
-    uint16_t z = ((uint16_t)raw_m[4] << 8) | raw_m[5];
-    
-    // Unsigned data centered at 32768 (2^15)
-    m[0] = ((float)x - offset) * sensitivity;
-    m[1] = ((float)y - offset) * sensitivity;
-    m[2] = ((float)z - offset) * sensitivity;
+    // 1. Combine Big-Endian bytes into unsigned 16-bit integers
+    uint16_t x_raw = (uint16_t)((rawData[0] << 8) | rawData[1]);
+    uint16_t y_raw = (uint16_t)((rawData[2] << 8) | rawData[3]);
+    uint16_t z_raw = (uint16_t)((rawData[4] << 8) | rawData[5]);
+
+    // 2. Subtract the 32768 Null Field offset to center around 0
+    // 3. Multiply by the 16-bit sensitivity 0.001 to get standard units
+    m[0] = ((float)x_raw - offset) * sensitivity;
+    m[1] = ((float)y_raw - offset) * sensitivity;
+    m[2] = ((float)z_raw - offset) * sensitivity;
+
+    //LOG_DBG("MMC5603 raw: %02X %02X %02X %02X %02X %02X -> %u %u %u -> %.2f %.2f %.2f",
+    //        rawData[0], rawData[1], rawData[2], rawData[3], rawData[4], rawData[5],
+    //        x_raw, y_raw, z_raw,
+    //        (double)m[0], (double)m[1], (double)m[2]);
 }
 
 const sensor_mag_t sensor_mag_mmc5603 = {
     *mmc5603_init,
     *mmc5603_shutdown,
-    *mmc5603_update_odr, // Using dummy for now
+    *mmc5603_update_odr, 
     *mmc5603_mag_oneshot,
     *mmc5603_mag_read,
     NULL, // No temp read implemented yet
